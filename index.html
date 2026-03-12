@@ -83,10 +83,11 @@ input:focus{border-color:#ff6b35}
       <button class="tb" id="tb-game">🎯 게임</button>
       <button class="tb" id="tb-team-builder">🔀 팀짜기</button>
     </div>
-    <div class="tabs" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px">
+    <div class="tabs" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
       <button class="tb" id="tb-players">👤 선수</button>
       <button class="tb" id="tb-history">📋 기록</button>
       <button class="tb" id="tb-hof">🥇 명전</button>
+      <button class="tb" id="tb-coffee">☕ 커피</button>
     </div>
   </div>
   <div class="sbar" id="sBar" style="background:rgba(74,158,255,0.1)">
@@ -177,6 +178,27 @@ input:focus{border-color:#ff6b35}
       <div id="hList"></div>
     </div>
 
+    <!-- 커피 당첨 탭 -->
+    <div id="tab-coffee" style="display:none">
+      <div class="card">
+        <div class="ctitle">☕ 커피 당첨 기록 추가</div>
+        <div style="margin-bottom:10px">
+          <div class="ilbl" style="margin-bottom:6px">당첨자</div>
+          <div id="coffeePlayerBtns" style="display:flex;flex-wrap:wrap;gap:6px"></div>
+        </div>
+        <div style="margin-bottom:10px">
+          <div class="ilbl" style="margin-bottom:6px">메모 (선택)</div>
+          <input class="ainput" type="text" id="coffeeMemo" placeholder="예: 501 최후반 역전패, 내기 커피" style="width:100%">
+        </div>
+        <button class="btn btnp" id="btnCoffeeAdd" style="margin-top:4px">☕ 기록 추가</button>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+        <div style="font-size:13px;font-weight:700">📋 당첨 기록</div>
+        <div id="coffeeStat" style="font-size:12px;color:#a7a9be"></div>
+      </div>
+      <div id="coffeeList"></div>
+    </div>
+
     <!-- 명예의 전당 탭 -->
     <div id="tab-hof" style="display:none">
       <div style="display:flex;gap:6px;margin-bottom:16px" id="hofMonthBtns"></div>
@@ -243,6 +265,7 @@ var MODES = ['301','501','701','Cricket'];
 // ── 상태 변수 ───────────────────────────────────────────
 var players   = [];
 var gameHist  = [];
+var coffeeLog = [];
 var curTab    = 'ranking';
 var matchType = 'solo';
 var teamCount = 2;
@@ -324,27 +347,30 @@ function loadData() {
   Promise.all([
     db.ref('players').once('value'),
     db.ref('history').once('value'),
+    db.ref('coffeeLog').once('value'),
   ]).then(function (snaps) {
     players = snaps[0].exists()
       ? Object.values(snaps[0].val()).map(function (p) {
           return { id: String(p.id), name: p.name, mmr: Number(p.mmr), games: Number(p.games), wins: Number(p.wins), ppdTotal: Number(p.ppdTotal||0), ppdGames: Number(p.ppdGames||0) };
         })
       : [];
-    gameHist = snaps[1].exists() ? Object.values(snaps[1].val()).reverse() : [];
+    gameHist   = snaps[1].exists() ? Object.values(snaps[1].val()).reverse() : [];
+    coffeeLog  = snaps[2].exists() ? Object.values(snaps[2].val()).reverse() : [];
     setSyncUI('ok');
+    ge('loadView').style.display = 'none';
+    ge('main').style.display     = 'block';
     renderAll();
     showToast('로드 완료! 🔥', '#00e676');
   }).catch(function (e) {
     setSyncUI('err');
     showToast('연결 실패: ' + e.message, '#ff4444');
-  }).finally(function () {
     ge('loadView').style.display = 'none';
     ge('main').style.display     = 'block';
   });
 }
 
 // ── 탭 전환 ─────────────────────────────────────────────
-var TAB_IDS = ['ranking','game','team-builder','players','history','hof'];
+var TAB_IDS = ['ranking','game','team-builder','players','history','hof','coffee'];
 
 TAB_IDS.forEach(function (t) {
   ge('tb-' + t).addEventListener('click', function () { switchTab(t); });
@@ -368,6 +394,7 @@ function renderTab(t) {
   if (t === 'players')      renderPlayers();
   if (t === 'history')      renderHistory();
   if (t === 'hof')          renderHof();
+  if (t === 'coffee')       renderCoffee();
 }
 
 // ── 랭킹 ────────────────────────────────────────────────
@@ -770,6 +797,17 @@ ge('btnSubmit').addEventListener('click', function () {
 
   ge('vScore').style.display = 'none';
   ge('vDone').style.display  = 'block';
+
+  // 꼴찌 자동 감지 → 커피 당첨 제안
+  var lastPlace = record.players.slice().sort(function(a,b){ return b.rank-a.rank; })[0];
+  if (lastPlace) {
+    setTimeout(function() {
+      if (confirm('☕ ' + lastPlace.name + ' 커피 당첨!
+기록에 추가할까요?')) {
+        addCoffeeRecord(lastPlace.name, record.mode + ' ' + (record.type==='team'?record.teamCount+'팀전':'개인전'));
+      }
+    }, 400);
+  }
 
   // Firebase 저장 (결과창 먼저 보여주고 저장)
   selIds = []; teamMap = {};
@@ -1303,9 +1341,110 @@ function renderHof() {
   }
 }
 
+// ── 커피 당첨 ───────────────────────────────────────────────
+var coffeeSelectedPlayer = null;
+
+function renderCoffee() {
+  // 선수 선택 버튼
+  var pb = ge('coffeePlayerBtns');
+  pb.innerHTML = '';
+  players.forEach(function(p) {
+    var b = document.createElement('button');
+    b.className = 'xbtn' + (coffeeSelectedPlayer === p.id ? ' on' : '');
+    b.style.cssText = 'font-size:13px;padding:7px 14px';
+    b.textContent = p.name;
+    b.addEventListener('click', (function(pid) {
+      return function() { coffeeSelectedPlayer = coffeeSelectedPlayer === pid ? null : pid; renderCoffee(); };
+    })(p.id));
+    pb.appendChild(b);
+  });
+
+  // 통계
+  var stat = ge('coffeeStat');
+  if (coffeeLog.length) {
+    var counts = {};
+    coffeeLog.forEach(function(c) { counts[c.name] = (counts[c.name]||0) + 1; });
+    var top = Object.keys(counts).sort(function(a,b){ return counts[b]-counts[a]; })[0];
+    stat.textContent = '총 ' + coffeeLog.length + '잔 · 최다: ' + top + ' (' + counts[top] + '잔)';
+  } else {
+    stat.textContent = '';
+  }
+
+  // 기록 목록
+  var cl = ge('coffeeList');
+  cl.innerHTML = '';
+  if (!coffeeLog.length) {
+    cl.innerHTML = '<div class="empty">☕<br><br>아직 기록이 없어요</div>';
+    return;
+  }
+
+  // 이름별 총합
+  var counts2 = {};
+  coffeeLog.forEach(function(c) { counts2[c.name] = (counts2[c.name]||0) + 1; });
+
+  coffeeLog.forEach(function(c, idx) {
+    var d = document.createElement('div');
+    d.style.cssText = 'background:#22203a;border:1px solid #2e2c4a;border-radius:12px;padding:13px 16px;margin-bottom:8px;display:flex;align-items:center;gap:12px';
+    d.innerHTML =
+      '<div style="font-size:26px">☕</div>' +
+      '<div style="flex:1">' +
+        '<div style="font-weight:800;font-size:15px">' + c.name + '</div>' +
+        '<div style="font-size:11px;color:#a7a9be;margin-top:2px">' +
+          c.date + (c.memo ? ' · ' + c.memo : '') +
+        '</div>' +
+      '</div>' +
+      '<div style="text-align:right;margin-right:8px">' +
+        '<div style="font-size:18px;font-weight:900;color:#ff6b35">' + counts2[c.name] + '잔</div>' +
+        '<div style="font-size:10px;color:#a7a9be">누적</div>' +
+      '</div>' +
+      '<button class="delbtn" style="padding:6px 10px;font-size:12px">🗑️</button>';
+    d.querySelector('.delbtn').addEventListener('click', (function(i) {
+      return function() {
+        if (!confirm('이 기록을 삭제할까요?')) return;
+        coffeeLog.splice(i, 1);
+        renderCoffee();
+        if (!db) return;
+        db.ref('coffeeLog').remove().then(function() {
+          var ps = [];
+          coffeeLog.slice().reverse().forEach(function(r) { ps.push(db.ref('coffeeLog').push(r)); });
+          return Promise.all(ps);
+        }).then(function() { showToast('삭제 완료!', '#ff4444'); });
+      };
+    })(idx));
+    cl.appendChild(d);
+  });
+}
+
+function addCoffeeRecord(playerName, memo) {
+  var rec = {
+    id:   Date.now(),
+    name: playerName,
+    date: new Date().toLocaleDateString('ko-KR'),
+    memo: memo || '',
+  };
+  coffeeLog.unshift(rec);
+  renderCoffee();
+  if (!db) return;
+  db.ref('coffeeLog').push(rec)
+    .then(function() { showToast(playerName + ' ☕ 커피 기록 완료!', '#ff6b35'); })
+    .catch(function(e) { showToast('저장 실패: ' + e.message, '#ff4444'); });
+}
+
 // ── 팀짜기 버튼 이벤트 ─────────────────────────────────────
 ge('tbBtnBalance').addEventListener('click', function() { doTeamAssign(false); });
 ge('tbBtnRandom').addEventListener('click',  function() { doTeamAssign(true);  });
+
+// ── 커피 버튼 이벤트 ────────────────────────────────────────
+ge('btnCoffeeAdd').addEventListener('click', function() {
+  if (!coffeeSelectedPlayer) { showToast('당첨자를 선택해주세요!', '#ff4444'); return; }
+  var p = null;
+  for (var i = 0; i < players.length; i++) { if (players[i].id === coffeeSelectedPlayer) { p = players[i]; break; } }
+  if (!p) return;
+  var memo = ge('coffeeMemo').value.trim();
+  ge('coffeeMemo').value = '';
+  coffeeSelectedPlayer = null;
+  addCoffeeRecord(p.name, memo);
+});
 
 // ── 시작 ─────────────────────────────────────────────────
 initFirebase();
